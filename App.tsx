@@ -1,20 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Pharmacy, MessageStatus, InquiryConfig, ResponseStatus } from './types';
 import PharmacyCard from './components/PharmacyCard';
 import { generatePharmacyMessage, batchGenerateMessages } from './services/geminiService';
 import { savePharmacies, loadPharmacies } from './services/storageService';
+import { parseCSV, exportToCSV, downloadCSV } from './services/csvService';
 import { Stats } from './components/Stats';
 import { 
     Plus, 
     Sparkles, 
     Upload, 
     Trash2, 
-    MessageCircle, 
     Pill,
     Play,
-    StopCircle,
     Database,
-    Filter
+    Filter,
+    FileUp,
+    Download
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -34,6 +35,8 @@ const App: React.FC = () => {
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [isAutoSending, setIsAutoSending] = useState(false);
   const [sendingProgress, setSendingProgress] = useState(0);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- Effects ---
   useEffect(() => {
@@ -121,8 +124,6 @@ const App: React.FC = () => {
   };
 
   // Automated Sending Simulation
-  // Since we cannot actually send automated WhatsApps from a browser without a backend API (Meta Business API),
-  // this simulates the workflow for the user's "CRM" usage.
   const handleAutoSend = async () => {
     const targets = pharmacies.filter(p => p.status !== MessageStatus.SENT && p.message);
     if (targets.length === 0) return;
@@ -162,6 +163,51 @@ const App: React.FC = () => {
     }
   };
 
+  // CSV Import Handler
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+        const importedPharmacies = await parseCSV(file);
+        
+        if (importedPharmacies.length === 0) {
+            alert("No valid pharmacies found in CSV.");
+            return;
+        }
+
+        // Avoid duplicates based on normalized phone number
+        const existingPhones = new Set(pharmacies.map(p => p.phone.replace(/\D/g, '')));
+        const uniqueNew = importedPharmacies.filter(p => {
+            const rawPhone = p.phone.replace(/\D/g, '');
+            return rawPhone.length > 5 && !existingPhones.has(rawPhone);
+        });
+
+        if (uniqueNew.length > 0) {
+            setPharmacies(prev => [...uniqueNew, ...prev]);
+            alert(`Successfully imported ${uniqueNew.length} new pharmacies. (${importedPharmacies.length - uniqueNew.length} duplicates skipped)`);
+        } else {
+            alert("All pharmacies in the file already exist in your database.");
+        }
+    } catch (error) {
+        console.error("Import failed", error);
+        alert("Failed to parse CSV file. Please check the format.");
+    } finally {
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // CSV Export Handler
+  const handleExport = () => {
+    const csvContent = exportToCSV(pharmacies);
+    const filename = `pharmacy_inquiries_${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadCSV(csvContent, filename);
+  };
+
   // Filtering
   const filteredPharmacies = pharmacies.filter(p => {
     if (activeTab === 'ALL') return true;
@@ -175,6 +221,15 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 pb-20 font-sans">
       
+      {/* Hidden File Input */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleFileChange} 
+        accept=".csv,.txt" 
+        className="hidden" 
+      />
+
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -187,8 +242,24 @@ const App: React.FC = () => {
                 <p className="text-xs text-gray-500">Automated Pharmacy Inquiry System</p>
             </div>
           </div>
-          <div className="text-xs font-mono text-gray-400 hidden sm:block">
-            Database Active
+          <div className="flex gap-2">
+              <button 
+                onClick={handleExport}
+                disabled={pharmacies.length === 0}
+                className="flex items-center gap-2 text-xs font-medium px-3 py-2 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50"
+                title="Export Database to CSV"
+              >
+                  <Download size={16} />
+                  <span className="hidden sm:inline">Export Data</span>
+              </button>
+              <button 
+                onClick={handleImportClick}
+                className="flex items-center gap-2 text-xs font-medium px-3 py-2 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors"
+                title="Import Pharmacies from CSV"
+              >
+                  <FileUp size={16} />
+                  <span className="hidden sm:inline">Import CSV</span>
+              </button>
           </div>
         </div>
       </header>
@@ -318,7 +389,7 @@ const App: React.FC = () => {
                     </button>
                  </div>
 
-                 <button onClick={clearAll} className="text-gray-400 hover:text-red-500 transition-colors">
+                 <button onClick={clearAll} className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded hover:bg-red-50" title="Clear Database">
                     <Trash2 size={18} />
                  </button>
             </div>
@@ -365,6 +436,14 @@ const App: React.FC = () => {
                     <div className="text-center py-12 bg-white rounded-xl border-2 border-dashed border-gray-200">
                         <Upload size={32} className="mx-auto text-gray-300 mb-2"/>
                         <p className="text-gray-500 text-sm">No pharmacies found in this view.</p>
+                        {activeTab === 'ALL' && (
+                            <button 
+                                onClick={handleImportClick}
+                                className="mt-4 text-indigo-600 text-xs font-medium hover:underline"
+                            >
+                                Import from CSV to get started
+                            </button>
+                        )}
                     </div>
                 ) : (
                     filteredPharmacies.map(pharmacy => (
